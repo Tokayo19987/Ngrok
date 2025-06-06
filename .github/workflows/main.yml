@@ -20,12 +20,12 @@ jobs:
         Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "admin@123" -Force)
 
     # ✅ Download and extract SRS (RTMP server)
-    - name: Download and Start SRS (RTMP)
-      run: |
-        Invoke-WebRequest -Uri "https://github.com/ossrs/srs/releases/download/v5.0-r5/srs-windows.zip" -OutFile "$env:USERPROFILE\srs.zip"
-        Expand-Archive -Path "$env:USERPROFILE\srs.zip" -DestinationPath "$env:USERPROFILE\srs"
-        Start-Process -FilePath "$env:USERPROFILE\srs\srs-windows\objs\srs.exe" -ArgumentList "-c", "conf\default.conf" -WorkingDirectory "$env:USERPROFILE\srs\srs-windows" -NoNewWindow
-        Start-Sleep -Seconds 5
+     - name: Download and Start SRS (RTMP)
+     run: |
+    Invoke-WebRequest -Uri "https://github.com/ossrs/srs/releases/download/v5.0.156/srs-win64-v5.0.156.zip" -OutFile "$env:USERPROFILE\srs.zip"
+    Expand-Archive -Path "$env:USERPROFILE\srs.zip" -DestinationPath "$env:USERPROFILE\srs"
+    Start-Process -FilePath "$env:USERPROFILE\srs\srs-win64-v5.0.156\objs\srs.exe" -ArgumentList "-c", "conf\default.conf" -WorkingDirectory "$env:USERPROFILE\srs\srs-win64-v5.0.156" -NoNewWindow
+    Start-Sleep -Seconds 5
 
     # ✅ Download and Start Ngrok
     - name: Start Ngrok TCP Tunnel for RTMP
