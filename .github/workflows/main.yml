@@ -1,0 +1,190 @@
+name: RDP + RTMP with Nginx + Ngrok
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-rdp-rtmp-ngrok:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+
+    # ✅ Enable Remote Desktop
+    - name: Enable RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "admin@123" -Force)
+
+    # ✅ Download and setup Nginx with RTMP module
+    - name: Download and Setup Nginx RTMP
+      run: |
+        # Download prebuilt Nginx with RTMP module
+        Invoke-WebRequest -Uri "https://github.com/illuspas/nginx-rtmp-win32/releases/download/1.2.1/nginx-rtmp-win32-1.2.1.zip" -OutFile "$env:USERPROFILE\nginx-rtmp.zip"
+        Expand-Archive -Path "$env:USERPROFILE\nginx-rtmp.zip" -DestinationPath "$env:USERPROFILE\nginx-rtmp"
+        
+        # Create nginx.conf for RTMP streaming
+        $nginxConf = @"
+        worker_processes 1;
+        events {
+            worker_connections 1024;
+        }
+        
+        # RTMP configuration
+        rtmp {
+            server {
+                listen 1935; # Listen on standard RTMP port
+                chunk_size 4000;
+                
+                # RTMP playback and recording
+                application live {
+                    live on;
+                    # Enable recording (optional)
+                    # record all;
+                    # record_path /tmp;
+                    # record_unique on;
+                    # record_suffix .flv;
+                    
+                    # Allow playback from anywhere
+                    allow play all;
+                    
+                    # Allow publishing from anywhere (for testing - restrict in production)
+                    allow publish all;
+                    
+                    # Enable HLS for web playback (optional)
+                    hls on;
+                    hls_path temp/hls;
+                    hls_fragment 3;
+                    hls_playlist_length 60;
+                }
+            }
+        }
+        
+        # HTTP configuration for HLS playback (optional)
+        http {
+            sendfile off;
+            tcp_nopush on;
+            directio 512;
+            default_type application/octet-stream;
+            
+            server {
+                listen 8080;
+                
+                location / {
+                    # Serve HLS files
+                    add_header Cache-Control no-cache;
+                    add_header Access-Control-Allow-Origin *;
+                }
+                
+                location /live {
+                    types {
+                        application/vnd.apple.mpegurl m3u8;
+                        video/mp2t ts;
+                    }
+                    root temp;
+                    add_header Cache-Control no-cache;
+                    add_header Access-Control-Allow-Origin *;
+                }
+                
+                location /stat {
+                    rtmp_stat all;
+                    rtmp_stat_stylesheet stat.xsl; # Use your stylesheet
+                }
+                
+                location /stat.xsl {
+                    # XML stylesheet to view RTMP stats
+                    root html;
+                }
+            }
+        }
+        "@
+        
+        # Write nginx.conf
+        $nginxConf | Out-File -FilePath "$env:USERPROFILE\nginx-rtmp\nginx-rtmp-win32-1.2.1\conf\nginx.conf" -Encoding UTF8
+        
+        # Create temp directory for HLS
+        New-Item -ItemType Directory -Path "$env:USERPROFILE\nginx-rtmp\nginx-rtmp-win32-1.2.1\temp" -Force
+        New-Item -ItemType Directory -Path "$env:USERPROFILE\nginx-rtmp\nginx-rtmp-win32-1.2.1\temp\hls" -Force
+
+    # ✅ Start Nginx RTMP Server
+    - name: Start Nginx RTMP Server
+      run: |
+        cd "$env:USERPROFILE\nginx-rtmp\nginx-rtmp-win32-1.2.1"
+        Start-Process -FilePath ".\nginx.exe" -NoNewWindow
+        Start-Sleep -Seconds 5
+        
+        # Verify nginx is running
+        $nginxProcess = Get-Process -Name "nginx" -ErrorAction SilentlyContinue
+        if ($nginxProcess) {
+            Write-Host "✅ Nginx RTMP server started successfully"
+            Write-Host "📺 RTMP server listening on port 1935"
+            Write-Host "🌐 HTTP server listening on port 8080 (for HLS playback)"
+        } else {
+            Write-Host "❌ Failed to start Nginx RTMP server"
+            exit 1
+        }
+
+    # ✅ Install and start Ngrok to tunnel port 1935 (RTMP)
+    - name: Start Ngrok TCP Tunnel for RTMP
+      env:
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_TOKEN }}  # <-- You must set this secret in your repo
+      run: |
+        # Download and setup Ngrok
+        Invoke-WebRequest -Uri "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip" -OutFile "$env:USERPROFILE\ngrok.zip"
+        Expand-Archive -Path "$env:USERPROFILE\ngrok.zip" -DestinationPath "$env:USERPROFILE\ngrok"
+        
+        cd "$env:USERPROFILE\ngrok"
+        .\ngrok.exe authtoken $env:NGROK_AUTH_TOKEN
+        
+        # Start Ngrok tunnel in background
+        Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp", "1935" -RedirectStandardOutput "ngrok.log" -NoNewWindow
+        Start-Sleep -Seconds 15
+        
+        # Extract and display the public RTMP URL
+        $ngrokOutput = Get-Content "ngrok.log" -Raw -ErrorAction SilentlyContinue
+        if ($ngrokOutput -match "tcp://([^:]+):(\d+)") {
+            $ngrokHost = $matches[1]
+            $ngrokPort = $matches[2]
+            $rtmpUrl = "rtmp://${ngrokHost}:${ngrokPort}/live"
+            
+            Write-Host ""
+            Write-Host "🎯 ================================="
+            Write-Host "🚀 RTMP SERVER IS NOW PUBLIC!"
+            Write-Host "🎯 ================================="
+            Write-Host ""
+            Write-Host "📡 Public RTMP URL: $rtmpUrl"
+            Write-Host ""
+            Write-Host "📺 OBS Studio Settings:"
+            Write-Host "   Server: rtmp://${ngrokHost}:${ngrokPort}/live"
+            Write-Host "   Stream Key: any_key_you_want (e.g., 'test', 'stream1', etc.)"
+            Write-Host ""
+            Write-Host "🌐 HLS Playback (if needed):"
+            Write-Host "   Will be available at: http://localhost:8080/live/[stream_key].m3u8"
+            Write-Host ""
+            Write-Host "⏱️  Server will run for 6 hours"
+            Write-Host "🎯 ================================="
+            Write-Host ""
+        } else {
+            Write-Host "❌ Failed to get Ngrok tunnel URL"
+            Write-Host "📋 Ngrok log content:"
+            Get-Content "ngrok.log" -ErrorAction SilentlyContinue
+        }
+
+    # ✅ Display connection info and keep alive
+    - name: Display Connection Info and Keep Session Alive
+      run: |
+        Write-Host ""
+        Write-Host "🖥️  RDP Connection Info:"
+        Write-Host "   Host: windows-latest GitHub Runner"
+        Write-Host "   Username: runneradmin"
+        Write-Host "   Password: admin@123"
+        Write-Host ""
+        Write-Host "🔄 Keeping session alive for 6 hours..."
+        Write-Host "📊 You can monitor the RTMP server status during this time"
+        Write-Host ""
+        
+        # Keep the runner alive for 6 hours
+        Start-Sleep -Seconds 21600
