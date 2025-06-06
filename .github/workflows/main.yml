@@ -1,0 +1,45 @@
+name: RDP + RTMP with SRS + Ngrok
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-rdp-rtmp-ngrok:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+
+    # ✅ Enable Remote Desktop
+    - name: Enable RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "admin@123" -Force)
+
+    # ✅ Download and run SRS (RTMP server)
+    - name: Download and Start SRS (RTMP)
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/ossrs/srs/releases/download/v5.0.156/srs-win64-v5.0.156.zip" -OutFile "$env:USERPROFILE\srs.zip"
+        Expand-Archive -Path "$env:USERPROFILE\srs.zip" -DestinationPath "$env:USERPROFILE\srs"
+        Start-Process -FilePath "$env:USERPROFILE\srs\srs-win64-v5.0.156\objs\srs.exe" -ArgumentList "-c", "conf\default.conf" -WorkingDirectory "$env:USERPROFILE\srs\srs-win64-v5.0.156" -NoNewWindow
+        Start-Sleep -Seconds 5
+
+    # ✅ Install and start Ngrok to tunnel port 1935 (RTMP)
+    - name: Start Ngrok TCP Tunnel for RTMP
+      env:
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_TOKEN }}  # <-- You must set this secret in your repo
+      run: |
+        Invoke-WebRequest -Uri "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip" -OutFile "$env:USERPROFILE\ngrok.zip"
+        Expand-Archive -Path "$env:USERPROFILE\ngrok.zip" -DestinationPath "$env:USERPROFILE\ngrok"
+        cd "$env:USERPROFILE\ngrok"
+        .\ngrok.exe authtoken $env:NGROK_AUTH_TOKEN
+        .\ngrok.exe tcp 1935 > ngrok.log &
+        Start-Sleep -Seconds 10
+        type ngrok.log | findstr "tcp://" || echo "Ngrok tunnel not found."
+
+    # ✅ Keep GitHub Runner alive for 6 hours
+    - name: Keep Session Alive
+      run: Start-Sleep -Seconds 21600
